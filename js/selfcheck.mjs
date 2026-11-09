@@ -1,5 +1,6 @@
 import fs from "node:fs"
 import { parseToml, normalizeConfig, serializeConfig, patchConfig } from "./toml.js"
+import { parseCommand, commandText } from "./commands.js"
 import {
   DISPLAY,
   tileArea,
@@ -87,6 +88,24 @@ check(
 )
 
 check("display size", DISPLAY.w === 1440)
+
+for (const sample of [
+  "layout floating",
+  "layout floating tiling",
+  "move-window-to-workspace 6",
+  "move-window-to-workspace 4 --follow",
+  "focus right --wrap-around",
+  "resize smart -50",
+  "resize smart +50",
+  "exec-and-forget ~/.config/dinky/sort-windows.sh",
+  "workspace next",
+  "mode service",
+  "join-with left",
+]) {
+  const parsed = parseCommand(sample)
+  check(`command ${sample}`, parsed.id !== "custom" && commandText(parsed) === sample)
+}
+check("custom command", parseCommand("not-a-command").id === "custom" && commandText(parseCommand("not-a-command")) === "not-a-command")
 
 function tag(config) {
   config.rules.forEach((rule, index) => {

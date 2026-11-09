@@ -1,7 +1,8 @@
 import { parseToml, normalizeConfig, serializeConfig, configWarnings, patchConfig, LAYOUTS } from "./toml.js"
 import { DISPLAY } from "./layout.js"
 import { paint } from "./stage.js"
-import { freshDemo, stageModel, motionMs, ruleSamples, previewRule, pressBinding } from "./scenes.js"
+import { freshDemo, stageModel, motionMs, ruleSamples, previewRule, pressBinding, ruleMatches } from "./scenes.js"
+import { COMMAND_SPECS, parseCommand, commandText, commandSpec } from "./commands.js"
 
 const $ = (id) => document.getElementById(id)
 let config = normalizeConfig({})
@@ -13,6 +14,7 @@ const ui = {
   originalText: "",
   originalConfig: null,
   actionSig: "",
+  ruleSig: "",
   playTimer: 0,
   spaceTimer: 0,
   heldMod: "",
@@ -137,6 +139,7 @@ function renderLive() {
   }
   ui.lastModel = model
   $("write").disabled = renderWarnings().length > 0
+  paintRuleBoard()
 }
 
 function select(id) {
@@ -145,6 +148,7 @@ function select(id) {
   history.replaceState(null, "", `#${id}`)
   clearInterval(ui.playTimer)
   ui.actionSig = ""
+  ui.ruleSig = ""
   buildRail()
   renderLive()
   if (id === "follow-space-order") settleSpacesSoon()
@@ -635,88 +639,316 @@ function tagRules(target) {
   }
 }
 
-function ruleHeading(rule, index) {
-  const who = rule["app-id"] || rule["app-name"] || rule.title || rule.kind || "any window"
-  const run = Array.isArray(rule.run) ? rule.run[0] : rule.run || "no command"
-  return `Rule ${index + 1} · ${who} · ${run}`
+function commandList(run) {
+  if (Array.isArray(run)) return run.map((item) => String(item))
+  if (!run) return []
+  return [String(run)]
 }
 
-function mountRules(body) {
-  const holder = el("div", "stack")
-  body.append(holder)
-  const draw = () => {
-    holder.replaceChildren()
-    config.rules.forEach((rule, index) => {
-      if (!rule._id) rule._id = `r${ruleSerial++}`
-      const card = el("div", "card")
-      card.append(el("strong", "", ruleHeading(rule, index)))
-      for (const [key, label] of RULE_FIELDS) {
-        const input = document.createElement("input")
-        input.type = "text"
-        input.value = rule[key] || ""
-        input.addEventListener("change", () => {
-          if (input.value.trim()) rule[key] = input.value.trim()
-          else delete rule[key]
-          card.querySelector("strong").textContent = ruleHeading(rule, index)
-          commit()
-        })
-        field(card, label, input)
-      }
-      const kind = document.createElement("select")
-      kind.append(new Option("Any kind", ""))
-      for (const name of ["normal", "dialog", "sheet", "panel"]) kind.append(new Option(name, name))
-      kind.value = rule.kind || ""
-      kind.addEventListener("change", () => {
-        if (kind.value) rule.kind = kind.value
-        else delete rule.kind
-        card.querySelector("strong").textContent = ruleHeading(rule, index)
-        commit()
-      })
-      field(card, "Kind", kind)
-      const run = document.createElement("textarea")
-      run.rows = 2
-      run.value = Array.isArray(rule.run) ? rule.run.join("\n") : rule.run || ""
-      run.addEventListener("change", () => {
-        const lines = run.value.split("\n").map((line) => line.trim()).filter(Boolean)
-        rule.run = lines.length <= 1 ? lines[0] || "" : lines
-        card.querySelector("strong").textContent = ruleHeading(rule, index)
-        commit()
-      })
-      field(card, "Commands, one per line", run)
-      const actions = el("div", "row-actions")
-      const up = button("Up")
-      up.addEventListener("click", () => {
-        if (index === 0) return
-        ;[config.rules[index - 1], config.rules[index]] = [config.rules[index], config.rules[index - 1]]
-        draw()
-        commit()
-      })
-      const down = button("Down")
-      down.addEventListener("click", () => {
-        if (index >= config.rules.length - 1) return
-        ;[config.rules[index + 1], config.rules[index]] = [config.rules[index], config.rules[index + 1]]
-        draw()
-        commit()
-      })
-      const remove = button("Remove")
-      remove.addEventListener("click", () => {
-        config.rules.splice(index, 1)
-        draw()
-        commit()
-      })
-      actions.append(up, down, remove)
-      card.append(actions)
-      holder.append(card)
-    })
-    const add = button("Add a rule")
-    add.addEventListener("click", () => {
-      config.rules.push({ _id: `r${ruleSerial++}`, run: "layout floating" })
-      draw()
+function setCommands(rule, commands) {
+  const clean = commands.map((item) => item.trim()).filter(Boolean)
+  rule.run = clean.length <= 1 ? clean[0] || "" : clean
+}
+
+function ruleTitle(rule) {
+  let name = "Any window"
+  if (rule["app-id"]) name = rule["app-id"]
+  else if (rule["app-id-regex"]) name = rule["app-id-regex"]
+  else if (rule["app-name"]) name = rule["app-name"] === ".*" ? "Any app" : rule["app-name"]
+  else if (rule.title) name = rule.title
+  else if (rule["window-identifier"]) name = rule["window-identifier"]
+  return rule.kind ? `${name}, ${rule.kind}` : name
+}
+
+function describeCommand(command) {
+  const parsed = parseCommand(command)
+  const spec = commandSpec(parsed.id)
+  if (parsed.id === "custom") return command || "No command"
+  const details = []
+  for (const field of spec.fields || []) {
+    const value = parsed.values[field.key]
+    if (value === "" || value == null || value === false) continue
+    details.push(field.kind === "check" ? field.label.toLowerCase() : String(value))
+  }
+  return details.length ? `${spec.label}, ${details.join(", ")}` : spec.label
+}
+
+function ruleDetail(rule) {
+  const commands = commandList(rule.run).map(describeCommand)
+  return commands.join(", ") || "No command"
+}
+
+function ruleBoardSig(demo) {
+  const shape = config.rules.map((rule) => `${rule._id}:${commandList(rule.run).length}`).join(",")
+  return `${demo.view}|${demo.ruleId}|${config.workspaces}|${shape}`
+}
+
+function showRule(id) {
+  const demo = demoFor("rules")
+  demo.view = "one"
+  demo.ruleId = id
+  const rule = config.rules.find((item) => item._id === id)
+  const samples = ruleSamples(config)
+  const picked = samples.findIndex((sample) => {
+    try {
+      return rule && ruleMatches(rule, sample)
+    } catch {
+      return false
+    }
+  })
+  if (picked >= 0) {
+    demo.picked = picked
+    demo.result = previewRule(config, samples[picked])
+  }
+  ui.ruleSig = ""
+  ui.actionSig = ""
+  commit()
+}
+
+function moveRule(index, delta) {
+  const next = index + delta
+  if (next < 0 || next >= config.rules.length) return
+  ;[config.rules[index], config.rules[next]] = [config.rules[next], config.rules[index]]
+  ui.ruleSig = ""
+  commit()
+}
+
+function removeRule(index) {
+  const demo = demoFor("rules")
+  config.rules.splice(index, 1)
+  demo.view = "all"
+  demo.ruleId = null
+  ui.ruleSig = ""
+  commit()
+}
+
+function addRule() {
+  const rule = { _id: `r${ruleSerial++}`, run: "layout floating" }
+  config.rules.push(rule)
+  showRule(rule._id)
+}
+
+function paintRuleBoard() {
+  const board = $("rule-board")
+  const stage = document.querySelector(".stage")
+  const show = sceneOf(ui.selected) === "rules"
+  board.hidden = !show
+  stage.classList.toggle("with-rules", show)
+  if (!show) {
+    if (ui.ruleSig) {
+      ui.ruleSig = ""
+      board.replaceChildren()
+    }
+    return
+  }
+  const demo = demoFor("rules")
+  if (demo.view === "one" && !config.rules.some((rule) => rule._id === demo.ruleId)) {
+    demo.view = "all"
+    demo.ruleId = null
+  }
+  const sig = ruleBoardSig(demo)
+  if (sig === ui.ruleSig) return
+  ui.ruleSig = sig
+  board.replaceChildren()
+  if (demo.view === "one") drawOneRule(board, config.rules.findIndex((rule) => rule._id === demo.ruleId))
+  else drawAllRules(board)
+}
+
+function drawAllRules(board) {
+  const head = el("div", "rule-head")
+  head.append(el("h2", "", "All rules"))
+  const add = button("Add a rule", "btn")
+  add.addEventListener("click", addRule)
+  head.append(add)
+  board.append(head, el("p", "rule-note", "Click a rule to edit it. Earlier rules run first."))
+  const list = el("div", "rule-list")
+  config.rules.forEach((rule, index) => {
+    if (!rule._id) rule._id = `r${ruleSerial++}`
+    const row = el("div", "rule-line")
+    const open = el("button", "rule-open")
+    open.type = "button"
+    const copy = el("span", "")
+    copy.append(el("strong", "", ruleTitle(rule)), el("em", "", ruleDetail(rule)))
+    open.append(el("span", "rule-index", String(index + 1)), copy)
+    open.addEventListener("click", () => showRule(rule._id))
+    const actions = el("div", "rule-moves")
+    const up = textButton("Up")
+    up.addEventListener("click", () => moveRule(index, -1))
+    const down = textButton("Down")
+    down.addEventListener("click", () => moveRule(index, 1))
+    const remove = textButton("Remove", "danger")
+    remove.addEventListener("click", () => removeRule(index))
+    actions.append(up, down, remove)
+    row.append(open, actions)
+    list.append(row)
+  })
+  board.append(list)
+}
+
+function textButton(label, className = "") {
+  const node = el("button", className ? `text-btn ${className}` : "text-btn", label)
+  node.type = "button"
+  return node
+}
+
+function drawOneRule(board, index) {
+  const rule = config.rules[index]
+  const head = el("div", "rule-head")
+  const back = button("All rules", "btn")
+  back.addEventListener("click", () => {
+    const demo = demoFor("rules")
+    demo.view = "all"
+    demo.ruleId = null
+    ui.ruleSig = ""
+    commit()
+  })
+  head.append(el("h2", "", `Rule ${index + 1}`), back)
+  board.append(head, el("p", "rule-note", "A blank matcher is ignored. Layout floating and layout tiling are decided before the window is placed."))
+  const grid = el("div", "rule-grid")
+  for (const [key, label] of RULE_FIELDS) {
+    const input = document.createElement("input")
+    input.type = "text"
+    input.value = rule[key] || ""
+    input.addEventListener("change", () => {
+      if (input.value.trim()) rule[key] = input.value.trim()
+      else delete rule[key]
       commit()
     })
-    holder.append(add)
+    field(grid, label, input)
   }
-  draw()
+  const kind = document.createElement("select")
+  kind.append(new Option("Any kind", ""))
+  for (const name of ["normal", "dialog", "sheet", "panel"]) kind.append(new Option(name, name))
+  kind.value = rule.kind || ""
+  kind.addEventListener("change", () => {
+    if (kind.value) rule.kind = kind.value
+    else delete rule.kind
+    commit()
+  })
+  field(grid, "Kind", kind)
+  const sheet = el("div", "rule-sheet")
+  sheet.append(grid, el("h3", "", "Commands"))
+  const commands = el("div", "command-list")
+  commandList(rule.run).forEach((command, commandIndex) => mountCommandRow(commands, rule, commandIndex, command))
+  sheet.append(commands)
+  const bar = el("div", "row-actions")
+  const add = button("Add a command", "btn")
+  add.addEventListener("click", () => {
+    const next = commandList(rule.run)
+    next.push("layout floating")
+    setCommands(rule, next)
+    ui.ruleSig = ""
+    commit()
+  })
+  const up = button("Move rule up")
+  up.addEventListener("click", () => moveRule(index, -1))
+  const down = button("Move rule down")
+  down.addEventListener("click", () => moveRule(index, 1))
+  const remove = button("Remove rule")
+  remove.addEventListener("click", () => removeRule(index))
+  bar.append(add, up, down, remove)
+  sheet.append(bar)
+  board.append(sheet)
+}
+
+function mountCommandRow(parent, rule, index, command) {
+  const row = el("div", "command-row")
+  const parsed = parseCommand(command)
+  const select = document.createElement("select")
+  let group = ""
+  let groupNode = null
+  for (const spec of COMMAND_SPECS) {
+    if (spec.group !== group) {
+      group = spec.group
+      groupNode = document.createElement("optgroup")
+      groupNode.label = group
+      select.append(groupNode)
+    }
+    groupNode.append(new Option(spec.label, spec.id))
+  }
+  select.value = parsed.id
+  const params = el("div", "command-params")
+  const write = (nextParsed) => {
+    const commands = commandList(rule.run)
+    commands[index] = commandText(nextParsed)
+    setCommands(rule, commands)
+    commit()
+  }
+  const fill = (current) => {
+    params.replaceChildren()
+    const spec = commandSpec(current.id)
+    for (const item of spec.fields || []) mountCommandField(params, item, current, () => write(current))
+  }
+  select.addEventListener("change", () => {
+    const spec = commandSpec(select.value)
+    const current = { id: spec.id, values: spec.defaults() }
+    if (spec.id === "custom") current.values.text = commandList(rule.run)[index] || ""
+    fill(current)
+    write(current)
+  })
+  fill(parsed)
+  const remove = textButton("Remove", "danger")
+  remove.addEventListener("click", () => {
+    const commands = commandList(rule.run)
+    commands.splice(index, 1)
+    setCommands(rule, commands)
+    ui.ruleSig = ""
+    commit()
+  })
+  row.append(select, params, remove)
+  parent.append(row)
+}
+
+function mountCommandField(parent, item, parsed, onChange) {
+  const values = parsed.values
+  if (item.kind === "check") {
+    const input = document.createElement("input")
+    input.type = "checkbox"
+    input.checked = Boolean(values[item.key])
+    input.addEventListener("change", () => {
+      values[item.key] = input.checked
+      onChange()
+    })
+    const wrap = el("label", "check")
+    wrap.append(input, el("span", "", item.label))
+    parent.append(wrap)
+    return
+  }
+  if (item.kind === "text") {
+    const input = document.createElement("input")
+    input.type = "text"
+    input.value = values[item.key] || ""
+    input.placeholder = item.placeholder || ""
+    input.addEventListener("change", () => {
+      values[item.key] = input.value
+      onChange()
+    })
+    field(parent, item.label, input)
+    return
+  }
+  const select = document.createElement("select")
+  let options = item.options || []
+  if (item.kind === "workspace" || item.kind === "workspace-move") {
+    options = []
+    const count = Math.max(config.workspaces, Number(values[item.key]) || 1)
+    for (let n = 1; n <= count; n++) options.push(String(n))
+    if (item.kind === "workspace-move") options.push("next", "prev")
+  }
+  if (item.kind === "mode") options = Object.keys(config.mode)
+  for (const option of options) {
+    const id = option
+    const label = option === "" ? "—" : option
+    select.append(new Option(label, id))
+  }
+  if (values[item.key] != null && ![...select.options].some((option) => option.value === String(values[item.key]))) {
+    select.append(new Option(String(values[item.key]), String(values[item.key])))
+  }
+  select.value = values[item.key] == null ? "" : String(values[item.key])
+  select.addEventListener("change", () => {
+    values[item.key] = select.value
+    onChange()
+  })
+  field(parent, item.label, select)
 }
 
 function mountBindings(body) {
@@ -843,7 +1075,7 @@ const SETTINGS = [
   { id: "bindings", group: "Keys", scene: "bindings", label: "Bindings", hint: "Press a key under the desktop, or click the desktop and type it. Keys follow the modifier sides above.", value: (c) => `${Object.values(c.mode).reduce((sum, table) => sum + Object.keys(table).length, 0)} keys`, mount: mountBindings },
   { id: "start-at-login", group: "Automation", scene: "login", label: "Start at login", hint: "Register dinky as a login item.", value: (c) => (c["start-at-login"] ? "Yes" : "No"), mount: (body) => toggle(body, "Open dinky at login", config["start-at-login"], (on) => { config["start-at-login"] = on; commit() }, "login") },
   { id: "hooks", group: "Automation", scene: "hooks", label: "Hooks", hint: "Commands dinky runs when something happens. One command per line.", value: (c) => (Object.keys(c.hooks).length ? Object.keys(c.hooks).join(", ") : "None"), mount: mountHooks },
-  { id: "rules", group: "Automation", scene: "rules", label: "Rules", hint: "Every matching rule runs, in order. Match on bundle id, app name, title, window id, and kind. The buttons on the desktop come from these rules.", value: (c) => `${c.rules.length} rules`, mount: mountRules },
+  { id: "rules", group: "Automation", scene: "rules", label: "Rules", hint: "Every matching rule runs, in order. Add and edit them on the right.", value: (c) => `${c.rules.length} rules`, mount: () => {} },
 ]
 
 function mountModifier(body, which) {
@@ -1422,6 +1654,7 @@ function applyParsed(text, message) {
   ui.demos = {}
   ui.snapshot = JSON.stringify(config)
   ui.actionSig = ""
+  ui.ruleSig = ""
   buildRail()
   renderLive()
   setStatus(warnings[0] ? `${message} ${warnings[0]}` : message, warnings.length > 0)
@@ -1554,6 +1787,7 @@ function applyConfigObject(next, message) {
   ui.demos = {}
   ui.snapshot = JSON.stringify(config)
   ui.actionSig = ""
+  ui.ruleSig = ""
   buildRail()
   renderLive()
   setStatus(message)

@@ -36,7 +36,7 @@ export function freshDemo(scene, config) {
     }
   }
   if (scene === "hooks") return { lines: [], workspace: 1, focus: 0, mode: "main", extra: false }
-  if (scene === "rules") return { picked: 0, result: null }
+  if (scene === "rules") return { picked: 0, result: null, view: "all", ruleId: null }
   if (scene === "swipe") return { focus: 0, workspace: 1, banner: "", finger: { x: 50, y: 50 } }
   if (scene === "motion") return { alt: false }
   if (scene === "drag") return { focus: 0, ghosts: [], custom: null }
