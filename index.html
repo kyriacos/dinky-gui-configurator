@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Dinky configuration</title>
+  <link rel="icon" href="data:,">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Schibsted+Grotesk:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+  <header>
+    <div>
+      <h1>Dinky</h1>
+      <p class="lede">Adjust a setting and watch the windows move.</p>
+      <p id="status" class="status" role="status"></p>
+    </div>
+    <div class="top-actions">
+      <button class="btn" id="reload" type="button">Reload from disk</button>
+      <button class="btn" id="open-file" type="button">Open file</button>
+      <input id="file" type="file" accept=".toml,text/plain" hidden>
+      <button class="btn" id="copy" type="button">Copy config</button>
+      <button class="btn" id="download" type="button">Download</button>
+      <button class="btn primary" id="write" type="button">Write config</button>
+    </div>
+  </header>
+  <div id="confirm" class="confirm" hidden>
+    <p id="confirm-text"></p>
+    <div class="confirm-actions">
+      <button class="btn primary" id="confirm-yes" type="button">Write it</button>
+      <button class="btn" id="confirm-no" type="button">Cancel</button>
+    </div>
+  </div>
+  <div class="layout">
+    <aside id="rail" aria-label="Settings"></aside>
+    <section class="stage">
+      <div id="desk" class="desk" tabindex="0" aria-label="Preview of a Mac desktop"></div>
+      <p id="caption" class="caption"></p>
+      <div id="actions" class="stage-actions"></div>
+    </section>
+  </div>
+  <details class="toml-drawer">
+    <summary>Config file</summary>
+    <div id="warnings" class="warnings"></div>
+    <pre id="toml"></pre>
+  </details>
+  <script type="module" src="js/main.js"></script>
+</body>
+</html>
