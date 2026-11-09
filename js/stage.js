@@ -95,7 +95,8 @@ function paintWindows(layer, windows, config) {
       node.style.setProperty("--ring", `${(ring / DISPLAY.w) * 100}cqi`)
       node.style.setProperty("--bd", win.focused ? config.borders["active-color"] : config.borders["inactive-color"])
       node.dataset.order = config.borders.order
-      node.style.zIndex = win.dragging ? "40" : win.floating ? "12" : win.focused ? "6" : "2"
+      const parkedZ = win.parked ? 8 - Math.min(win.depth || 0, 5) : 0
+      node.style.zIndex = win.dragging ? "40" : win.floating ? "12" : parkedZ ? String(parkedZ) : win.focused ? "6" : "2"
       if (win.waiting) node.style.setProperty("--wait", `${win.waitMs || 100}ms`)
       const body = node.querySelector(".win-body")
       if (win.panel === "login") paintLogin(body, win.loginOn)

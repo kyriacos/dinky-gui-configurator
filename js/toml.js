@@ -738,3 +738,427 @@ function emitWorkspaceFields(lines, entry) {
   if (entry["fullscreen-width"] != null) lines.push(`fullscreen-width = ${emitNumber(entry["fullscreen-width"])}`)
   if (entry["lone-window-width"] != null) lines.push(`lone-window-width = ${emitNumber(entry["lone-window-width"])}`)
 }
+
+const RULE_FIELDS = ["app-id", "app-id-regex", "app-name", "title", "window-identifier", "exclude-window-identifier", "kind", "run"]
+
+function emitValue(value) {
+  return emitScalar(value) ?? emitInline(value)
+}
+
+function sameLeaf(a, b) {
+  return JSON.stringify(a) === JSON.stringify(b)
+}
+
+function collectLeaves(value, path, out) {
+  if (path === "rules" || path.startsWith("rules.")) return
+  if (Array.isArray(value)) {
+    out[path] = value
+    return
+  }
+  if (value && typeof value === "object") {
+    const keys = Object.keys(value).filter((key) => key !== "_id")
+    if (!keys.length) return
+    for (const key of keys) collectLeaves(value[key], path ? `${path}.${key}` : key, out)
+    return
+  }
+  out[path] = value
+}
+
+function valueAt(root, path) {
+  let cursor = root
+  for (const part of path.split(".")) {
+    if (cursor == null || typeof cursor !== "object") return undefined
+    cursor = cursor[part]
+  }
+  return cursor
+}
+
+function showValue(value) {
+  if (value == null) return "unset"
+  if (typeof value === "string") return value
+  if (typeof value === "number" || typeof value === "boolean") return String(value)
+  return emitValue(value)
+}
+
+function decodeKeyPath(input) {
+  const parts = []
+  let i = 0
+  const s = input.trim()
+  while (i < s.length) {
+    while (s[i] === " " || s[i] === "\t") i++
+    if (i >= s.length) break
+    if (s[i] === "'" || s[i] === '"') {
+      const q = s[i++]
+      let out = ""
+      while (i < s.length && s[i] !== q) out += s[i++]
+      if (s[i] === q) i++
+      parts.push(out)
+    } else {
+      let out = ""
+      while (i < s.length && s[i] !== ".") out += s[i++]
+      parts.push(out.trim())
+    }
+    if (s[i] === ".") i++
+  }
+  return parts.filter((part) => part !== "")
+}
+
+function parseHeader(line) {
+  const hash = line.indexOf("#")
+  const code = (hash === -1 ? line : line.slice(0, hash)).trim()
+  const array = code.startsWith("[[")
+  const inner = array ? code.slice(2, code.lastIndexOf("]]")) : code.slice(1, code.lastIndexOf("]"))
+  return { array, path: decodeKeyPath(inner).join(".") }
+}
+
+function readRawValue(src, index) {
+  let i = index
+  const stack = []
+  let quote = ""
+  while (i < src.length) {
+    const c = src[i]
+    if (quote) {
+      if (quote === '"' && c === "\\") {
+        i += 2
+        continue
+      }
+      if (c === quote) quote = ""
+      i++
+      continue
+    }
+    if (c === '"' || c === "'") {
+      quote = c
+      i++
+      continue
+    }
+    if (c === "[" || c === "{") {
+      stack.push(c)
+      i++
+      continue
+    }
+    if ((c === "]" || c === "}") && stack.length) {
+      stack.pop()
+      i++
+      continue
+    }
+    if ((c === " " || c === "\t" || c === "\r") && stack.length === 0) {
+      let j = i
+      while (j < src.length && (src[j] === " " || src[j] === "\t" || src[j] === "\r")) j++
+      if (j >= src.length || src[j] === "#" || src[j] === "\n") break
+      i++
+      continue
+    }
+    if ((c === "#" || c === "\n") && stack.length === 0) break
+    i++
+  }
+  return { text: src.slice(index, i), end: i }
+}
+
+function parseDocument(text) {
+  const src = String(text).replace(/^\uFEFF/, "").replace(/\r\n/g, "\n")
+  const items = []
+  const counts = {}
+  let table = ""
+  let i = 0
+  while (i < src.length) {
+    if (src[i] === "\n") {
+      items.push({ type: "raw", text: "\n" })
+      i++
+      continue
+    }
+    const lineEnd = src.indexOf("\n", i)
+    const line = src.slice(i, lineEnd === -1 ? src.length : lineEnd)
+    const trimmed = line.trim()
+    const takeLine = () => {
+      const text = lineEnd === -1 ? line : src.slice(i, lineEnd + 1)
+      i += text.length
+      return text
+    }
+    if (!trimmed || trimmed.startsWith("#")) {
+      items.push({ type: "raw", text: takeLine() })
+      continue
+    }
+    if (trimmed.startsWith("[")) {
+      const text = takeLine()
+      const header = parseHeader(trimmed)
+      let path = header.path
+      if (header.array) {
+        const n = counts[header.path] || 0
+        counts[header.path] = n + 1
+        path = `${header.path}[${n}]`
+      }
+      table = path
+      items.push({ type: "header", text, path, array: header.array, headerPath: header.path })
+      continue
+    }
+    const match = /^(\s*(?:[A-Za-z0-9_-]+|"[^"\n]*"|'[^'\n]*')(?:\s*\.\s*(?:[A-Za-z0-9_-]+|"[^"\n]*"|'[^'\n]*'))*)\s*=\s*/.exec(line)
+    if (!match) {
+      items.push({ type: "raw", text: takeLine() })
+      continue
+    }
+    const key = decodeKeyPath(match[1]).join(".")
+    const valueStart = i + match[0].length
+    const value = readRawValue(src, valueStart)
+    const nl = src.indexOf("\n", value.end)
+    const suffixEnd = nl === -1 ? src.length : nl + 1
+    items.push({
+      type: "key",
+      table,
+      key,
+      path: table ? `${table}.${key}` : key,
+      prefix: match[0],
+      valueText: value.text,
+      suffix: src.slice(value.end, suffixEnd),
+    })
+    i = suffixEnd
+  }
+  return items
+}
+
+function renderItems(items) {
+  let out = ""
+  for (const item of items) {
+    if (item.type === "key") out += item.prefix + item.valueText + item.suffix
+    else if (item.type !== "rules-marker") out += item.text
+  }
+  return out
+}
+
+function ruleBody(rule) {
+  const out = {}
+  for (const key of RULE_FIELDS) {
+    if (rule?.[key] != null && rule[key] !== "") out[key] = rule[key]
+  }
+  return out
+}
+
+function rulesSame(before, after) {
+  const left = before || []
+  const right = after || []
+  if (left.length !== right.length) return false
+  return left.every((rule, index) => rule._id === right[index]._id && sameLeaf(ruleBody(rule), ruleBody(right[index])))
+}
+
+function ruleLabel(rule) {
+  if (rule?.["app-name"] === ".*") return "the catch-all rule"
+  const who = rule?.["app-id"] || rule?.["app-name"] || rule?.title || rule?.kind
+  return who ? `the rule for ${who}` : "a rule"
+}
+
+function keyItem(table, key, valueText) {
+  return {
+    type: "key",
+    table,
+    key,
+    path: table ? `${table}.${key}` : key,
+    prefix: `${key} = `,
+    valueText,
+    suffix: "\n",
+  }
+}
+
+function updateRuleBlock(block, rule) {
+  const header = block.find((item) => item.type === "header")
+  const table = header?.path || "rules[new]"
+  for (const key of RULE_FIELDS) {
+    const value = rule[key]
+    const index = block.findIndex((item) => item.type === "key" && item.key === key)
+    if (value == null || value === "") {
+      if (index >= 0) block.splice(index, 1)
+      continue
+    }
+    const text = emitValue(value)
+    if (index >= 0) block[index].valueText = text
+    else {
+      let at = block.length
+      while (at > 0 && block[at - 1].type === "raw") at--
+      block.splice(at, 0, keyItem(table, key, text))
+    }
+  }
+}
+
+function freshRuleBlock(rule) {
+  const block = [
+    { type: "raw", text: "\n" },
+    { type: "header", text: "[[rules]]\n", path: "rules[new]", array: true, headerPath: "rules" },
+  ]
+  updateRuleBlock(block, rule)
+  return block
+}
+
+function extractRuleBlocks(items) {
+  const ranges = []
+  for (let i = 0; i < items.length; i++) {
+    const item = items[i]
+    if (item.type !== "header" || !item.array || item.headerPath !== "rules") continue
+    let end = i + 1
+    while (end < items.length && items[end].type !== "header") end++
+    ranges.push([i, end])
+    i = end - 1
+  }
+  if (!ranges.length) return { items, blocks: [] }
+  const skip = new Set()
+  for (const [start, end] of ranges) {
+    for (let i = start; i < end; i++) skip.add(i)
+  }
+  const next = []
+  items.forEach((item, index) => {
+    if (index === ranges[0][0]) next.push({ type: "rules-marker" })
+    if (!skip.has(index)) next.push(item)
+  })
+  return { items: next, blocks: ranges.map(([start, end]) => items.slice(start, end)) }
+}
+
+function hasKey(items, path) {
+  return items.some((item) => item.type === "key" && item.path === path)
+}
+
+function ancestorKey(items, path) {
+  const parts = path.split(".")
+  for (let i = parts.length - 1; i > 0; i--) {
+    const parent = parts.slice(0, i).join(".")
+    if (hasKey(items, parent)) return parent
+  }
+  return ""
+}
+
+function formatHeader(path) {
+  return path.split(".").map((part) => (/^[A-Za-z0-9_-]+$/.test(part) ? part : `'${part.replaceAll("'", "")}'`)).join(".")
+}
+
+function insertKey(items, path, valueText) {
+  const headers = items.filter((item) => item.type === "header" && !item.array).map((item) => item.path)
+  let table = ""
+  for (const header of headers) {
+    if (path.startsWith(`${header}.`) && header.length > table.length) table = header
+  }
+  let key = table ? path.slice(table.length + 1) : path
+  if (!table && path.includes(".")) {
+    const parts = path.split(".")
+    table = parts.slice(0, -1).join(".")
+    key = parts.at(-1)
+  }
+  const item = keyItem(table, key, valueText)
+  if (hasKey(items, item.path) || hasKey(items, path)) {
+    const found = items.find((entry) => entry.type === "key" && (entry.path === path || entry.path === item.path))
+    found.valueText = valueText
+    return
+  }
+  if (!table) {
+    let at = 0
+    for (let i = 0; i < items.length; i++) {
+      if (items[i].type === "header") break
+      if (items[i].type === "key") at = i + 1
+    }
+    items.splice(at, 0, item)
+    return
+  }
+  const headerAt = items.findIndex((entry) => entry.type === "header" && !entry.array && entry.path === table)
+  if (headerAt === -1) {
+    items.push({ type: "raw", text: "\n" }, { type: "header", text: `[${formatHeader(table)}]\n`, path: table, array: false, headerPath: table }, item)
+    return
+  }
+  let lastKey = headerAt
+  for (let i = headerAt + 1; i < items.length; i++) {
+    if (items[i].type === "header") break
+    if (items[i].type === "key") lastKey = i
+  }
+  items.splice(lastKey + 1, 0, item)
+}
+
+function removeKey(items, path) {
+  const index = items.findIndex((item) => item.type === "key" && item.path === path)
+  if (index >= 0) items.splice(index, 1)
+}
+
+function pruneHeaders(items, removed) {
+  const tables = new Set(removed.map((path) => path.split(".").slice(0, -1).join(".")).filter(Boolean))
+  for (let i = items.length - 1; i >= 0; i--) {
+    const item = items[i]
+    if (item.type !== "header" || item.array || !tables.has(item.path)) continue
+    let keys = 0
+    let notes = false
+    for (let j = i + 1; j < items.length; j++) {
+      if (items[j].type === "header") break
+      if (items[j].type === "key") keys++
+      else if (items[j].type === "raw" && items[j].text.trim()) notes = true
+    }
+    if (!keys && !notes) items.splice(i, 1)
+  }
+}
+
+export function patchConfig(originalText, before, after) {
+  let items = parseDocument(originalText)
+  const changes = []
+  if (!rulesSame(before?.rules, after?.rules)) {
+    const extracted = extractRuleBlocks(items)
+    items = extracted.items
+    const byId = new Map()
+    ;(before?.rules || []).forEach((rule, index) => {
+      if (extracted.blocks[index]) byId.set(rule._id, extracted.blocks[index])
+    })
+    let edited = false
+    const blocks = (after?.rules || []).map((rule) => {
+      const existing = byId.get(rule._id)
+      if (!existing) {
+        changes.push(`Added ${ruleLabel(rule)}`)
+        return freshRuleBlock(rule)
+      }
+      const prior = (before?.rules || []).find((item) => item._id === rule._id)
+      if (!sameLeaf(ruleBody(prior), ruleBody(rule))) {
+        changes.push(`Updated ${ruleLabel(rule)}`)
+        edited = true
+        updateRuleBlock(existing, rule)
+      }
+      return existing
+    })
+    for (const rule of before?.rules || []) {
+      if (!(after?.rules || []).some((item) => item._id === rule._id)) changes.push(`Removed ${ruleLabel(rule)}`)
+    }
+    const beforeIds = (before?.rules || []).map((rule) => rule._id).join("\0")
+    const afterIds = (after?.rules || []).map((rule) => rule._id).join("\0")
+    if (beforeIds !== afterIds && (before?.rules || []).length === (after?.rules || []).length && !edited && changes.length === 0) {
+      changes.push("Reordered rules")
+    } else if (beforeIds !== afterIds && (before?.rules || []).every((rule) => (after?.rules || []).some((item) => item._id === rule._id)) && (before?.rules || []).length === (after?.rules || []).length) {
+      changes.push("Reordered rules")
+    }
+    const flat = blocks.flat()
+    const marker = items.findIndex((item) => item.type === "rules-marker")
+    if (marker === -1) items.push(...flat)
+    else items.splice(marker, 1, ...flat)
+  }
+
+  const oldLeaves = {}
+  const newLeaves = {}
+  collectLeaves(before, "", oldLeaves)
+  collectLeaves(after, "", newLeaves)
+  const planned = new Map()
+  const unsets = []
+  for (const path of new Set([...Object.keys(oldLeaves), ...Object.keys(newLeaves)])) {
+    if (sameLeaf(oldLeaves[path], newLeaves[path])) continue
+    if (newLeaves[path] == null) unsets.push(path)
+    else {
+      const target = hasKey(items, path)
+        ? { path, value: newLeaves[path] }
+        : ancestorKey(items, path)
+          ? { path: ancestorKey(items, path), value: valueAt(after, ancestorKey(items, path)) }
+          : { path, value: newLeaves[path] }
+      planned.set(target.path, target.value)
+    }
+  }
+  const removed = []
+  for (const path of unsets) {
+    if (planned.has(path)) continue
+    if ([...planned.keys()].some((parent) => path === parent || path.startsWith(`${parent}.`))) continue
+    removed.push(path)
+    removeKey(items, path)
+    changes.push(`Removed ${path}`)
+  }
+  for (const [path, value] of planned) {
+    const previous = valueAt(before, path)
+    changes.push(previous == null ? `Added ${path} = ${showValue(value)}` : `${path}: ${showValue(previous)} → ${showValue(value)}`)
+    insertKey(items, path, emitValue(value))
+  }
+  pruneHeaders(items, removed)
+  return { text: renderItems(items), changes }
+}

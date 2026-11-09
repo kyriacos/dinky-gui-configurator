@@ -328,16 +328,18 @@ export function arrangeScrolling(count, content, tile, focus, fraction, gapH) {
     return { index, x, y: content.y, w: colW, h: content.h, fully }
   })
 
-  const sliver = 25
+  const sliver = 64
   const left = items.filter((item) => !item.fully && item.index < focus).sort((a, b) => b.index - a.index)
   const right = items.filter((item) => !item.fully && item.index > focus).sort((a, b) => a.index - b.index)
   left.forEach((item, offset) => {
     item.x = tile.x + sliver - colW - offset * 14
     item.parked = "left"
+    item.depth = offset
   })
   right.forEach((item, offset) => {
     item.x = tile.x + tile.w - sliver + offset * 14
     item.parked = "right"
+    item.depth = offset
   })
 
   const visible = items.filter((item) => !item.parked)

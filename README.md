@@ -10,4 +10,4 @@ python3 server.py
 
 Open http://127.0.0.1:8766. Python 3 is enough. Nothing to install.
 
-The page reads `~/.config/dinky/dinky.toml`. **Write config** replaces that file after you confirm, and copies the current one beside it first. dinky reloads on save. **Copy config** and **Download** leave the file alone.
+The page reads `~/.config/dinky/dinky.toml`. **Write config** asks first, then changes only the keys you edited. Comments and the rest of the file stay. The current file is copied beside it before the write. dinky reloads on save. **Copy config** and **Download** leave the file alone.

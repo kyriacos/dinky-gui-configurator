@@ -81,6 +81,8 @@ function decorate(placed, focus, config, people = cast(8)) {
       floating: Boolean(rect.floating),
       borderless: borderless(config, rect.appId || person.appId),
       peek: Boolean(rect.peek),
+      parked: rect.parked || "",
+      depth: rect.depth || 0,
       panel: rect.panel || null,
       loginOn: rect.loginOn,
       dragging: Boolean(rect.dragging),
@@ -199,7 +201,7 @@ export function stageModel(config, scene, demo) {
     const parked = placed.windows.some((win) => win.parked)
     return {
       scene,
-      caption: `Each new column takes ${Math.round(config.scrolling["column-width"] * 100)}% of the width. A lone column fills the screen. ${parked ? "Columns that don't fit hang off the edge with a sliver still visible, because macOS can't clip another app's window." : "These columns fit, so they sit centred."}`,
+      caption: `Each new column takes ${Math.round(config.scrolling["column-width"] * 100)}% of the width. A lone column fills the screen. ${parked ? "Columns that don't fit hang off the edge. dinky keeps at least 25 points visible, because macOS can't clip another app's window. This preview draws that sliver wider so you can see it." : "These columns fit, so they sit centred."}`,
       actions: [
         { id: "open", label: "Open a column" },
         { id: "focus-next", label: "Focus next column" },
@@ -646,7 +648,7 @@ export function stageModel(config, scene, demo) {
   }
 
   if (scene === "rules") {
-    const samples = ruleSamples()
+    const samples = ruleSamples(config)
     const sample = samples[demo.picked] || samples[0]
     const result = demo.result || previewRule(config, sample)
     const resolved = resolveWorkspace(config, result.workspace, null)
@@ -728,8 +730,8 @@ export function stageModel(config, scene, demo) {
     const focusId = visible[demo.focus]?.id
     return {
       scene,
-      caption: `Mode ${demo.mode}. Click the desktop and press a binding, or press a row in the list. ${demo.banner || ""}`.trim(),
-      actions: [],
+      caption: `Mode ${demo.mode}. Press a key below, or click the desktop and type it. ${demo.banner || ""}`.trim(),
+      actions: Object.keys(config.mode[demo.mode] || {}).map((combo) => ({ id: `bind:${combo}`, label: combo, compact: true })),
       monitors: [
         screenOf(config, {
           windows: decorate(
@@ -777,15 +779,49 @@ function labelFor(which) {
   return { alt: "Option", ctrl: "Control", cmd: "Command", shift: "Shift" }[which] || which
 }
 
-export function ruleSamples() {
-  return [
-    { appName: "Google Chrome", appId: "com.google.Chrome", title: "New Tab", kind: "normal", canFullscreen: true },
-    { appName: "Ghostty", appId: "com.mitchellh.ghostty", title: "fish", kind: "normal", canFullscreen: true },
-    { appName: "TextEdit", appId: "com.apple.TextEdit", title: "Untitled", kind: "normal", canFullscreen: true },
-    { appName: "System Settings", appId: "com.apple.systempreferences", title: "Appearance", kind: "normal", canFullscreen: true },
-    { appName: "Preview", appId: "com.apple.Preview", title: "Photo", kind: "normal", canFullscreen: true },
-    { appName: "Installer", appId: "com.apple.installer", title: "Copying", kind: "dialog", canFullscreen: false },
-  ]
+const APP_NAMES = {
+  "com.google.Chrome": "Chrome",
+  "com.mitchellh.ghostty": "Ghostty",
+  "com.apple.systempreferences": "System Settings",
+  "com.apple.TextEdit": "TextEdit",
+  "com.tinyspeck.slackmacgap": "Slack",
+  "com.tinyapp.TablePlus": "TablePlus",
+  "com.anthropic.claudefordesktop": "Claude",
+  "dev.warp.Warp-Stable": "Warp",
+}
+
+function sampleFromRule(rule) {
+  let appName = ""
+  let appId = rule["app-id"] || ""
+  if (appId && APP_NAMES[appId]) appName = APP_NAMES[appId]
+  if (!appName && rule["app-name"] && rule["app-name"] !== ".*") {
+    const stripped = rule["app-name"].replace(/^\^/, "").replace(/\$$/, "")
+    if (stripped && !/[\\[\]().*+?|]/.test(stripped)) appName = stripped
+  }
+  if (!appName && appId) appName = appId.split(".").pop().replace(/([a-z])([A-Z])/g, "$1 $2")
+  if (!appName) return null
+  if (!appId) {
+    const known = Object.entries(APP_NAMES).find(([, name]) => name === appName)
+    appId = known ? known[0] : `local.${appName}`
+  }
+  const kind = rule.kind || "normal"
+  return { appName, appId, title: appName, kind, canFullscreen: kind === "normal" }
+}
+
+export function ruleSamples(config) {
+  const samples = []
+  const seen = new Set()
+  for (const rule of config?.rules || []) {
+    const sample = sampleFromRule(rule)
+    if (!sample || seen.has(sample.appName)) continue
+    seen.add(sample.appName)
+    samples.push(sample)
+  }
+  if (!seen.has("Preview")) {
+    samples.push({ appName: "Preview", appId: "com.apple.Preview", title: "Photo", kind: "normal", canFullscreen: true })
+  }
+  samples.push({ appName: "Dialog", appId: "com.apple.installer", title: "Copying", kind: "dialog", canFullscreen: false })
+  return samples
 }
 
 function testRegex(pattern, value) {

@@ -76,6 +76,8 @@ h1 {
 
 .btn:hover { background: rgba(255, 255, 255, 0.85); }
 
+.btn.tiny { padding: 4px 8px; font-size: 13px; }
+
 .btn.primary {
   background: var(--tally);
   border-color: var(--tally);
@@ -96,11 +98,14 @@ h1 {
   border-radius: 12px;
   display: flex;
   gap: 16px;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
 }
 
 .confirm p { margin: 0; max-width: 70ch; }
+.confirm ul { margin: 8px 0 0; padding-left: 1.1em; }
+.confirm li { margin: 2px 0; }
+.confirm-actions { flex: none; }
 
 .layout {
   display: grid;
@@ -253,6 +258,8 @@ input[type="color"] {
   gap: 6px;
 }
 
+.card .field { margin: 0; }
+
 .row-actions { display: flex; flex-wrap: wrap; gap: 6px; }
 
 .tag-list { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
@@ -272,6 +279,7 @@ input[type="color"] {
 }
 
 .stage-actions { margin-top: 12px; }
+.stage-actions.scroll { max-height: 168px; overflow: auto; }
 
 .toml-drawer {
   margin: 0 22px 36px;

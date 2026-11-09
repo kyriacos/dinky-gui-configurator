@@ -1,4 +1,4 @@
-import { parseToml, normalizeConfig, serializeConfig, configWarnings, LAYOUTS } from "./toml.js"
+import { parseToml, normalizeConfig, serializeConfig, configWarnings, patchConfig, LAYOUTS } from "./toml.js"
 import { DISPLAY } from "./layout.js"
 import { paint } from "./stage.js"
 import { freshDemo, stageModel, motionMs, ruleSamples, previewRule, pressBinding } from "./scenes.js"
@@ -10,6 +10,8 @@ const ui = {
   demos: {},
   path: "~/.config/dinky/dinky.toml",
   snapshot: "",
+  originalText: "",
+  originalConfig: null,
   actionSig: "",
   playTimer: 0,
   spaceTimer: 0,
@@ -116,8 +118,8 @@ function renderLive() {
   const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches
   paint($("desk"), model, { motion: reduce ? 0 : motionMs(config), config })
   $("caption").textContent = model.caption
-  const toml = serializeConfig(config)
-  $("toml").textContent = toml
+  const patch = pendingPatch()
+  $("toml").textContent = patch.text || ""
   renderWarnings()
   syncValues()
   const signature = model.actions.map((action) => `${action.id}:${action.label}:${action.pressed ? 1 : 0}`).join("|")
@@ -125,8 +127,10 @@ function renderLive() {
     ui.actionSig = signature
     const host = $("actions")
     host.replaceChildren()
+    host.classList.toggle("scroll", model.actions.some((action) => action.compact))
     for (const action of model.actions) {
       const node = button(action.label, action.pressed ? "btn on" : "btn")
+      if (action.compact) node.classList.add("tiny")
       node.addEventListener("click", () => onAction(action.id))
       host.append(node)
     }
@@ -614,41 +618,72 @@ function resolvedOuter(name) {
   return sides
 }
 
+const RULE_FIELDS = [
+  ["app-id", "Bundle id"],
+  ["app-id-regex", "Bundle id regex"],
+  ["app-name", "App name regex"],
+  ["title", "Title regex"],
+  ["window-identifier", "Window id regex"],
+  ["exclude-window-identifier", "Exclude window id"],
+]
+
+let ruleSerial = 1
+
+function tagRules(target) {
+  for (const rule of target.rules || []) {
+    if (!rule._id) rule._id = `r${ruleSerial++}`
+  }
+}
+
+function ruleHeading(rule, index) {
+  const who = rule["app-id"] || rule["app-name"] || rule.title || rule.kind || "any window"
+  const run = Array.isArray(rule.run) ? rule.run[0] : rule.run || "no command"
+  return `Rule ${index + 1} · ${who} · ${run}`
+}
+
 function mountRules(body) {
   const holder = el("div", "stack")
   body.append(holder)
   const draw = () => {
     holder.replaceChildren()
     config.rules.forEach((rule, index) => {
+      if (!rule._id) rule._id = `r${ruleSerial++}`
       const card = el("div", "card")
-      card.append(el("strong", "", `Rule ${index + 1}`))
-      for (const key of ["app-id", "app-name", "title", "kind"]) {
+      card.append(el("strong", "", ruleHeading(rule, index)))
+      for (const [key, label] of RULE_FIELDS) {
         const input = document.createElement("input")
         input.type = "text"
-        input.placeholder = key
         input.value = rule[key] || ""
         input.addEventListener("change", () => {
           if (input.value.trim()) rule[key] = input.value.trim()
           else delete rule[key]
+          card.querySelector("strong").textContent = ruleHeading(rule, index)
           commit()
         })
-        card.append(input)
+        field(card, label, input)
       }
+      const kind = document.createElement("select")
+      kind.append(new Option("Any kind", ""))
+      for (const name of ["normal", "dialog", "sheet", "panel"]) kind.append(new Option(name, name))
+      kind.value = rule.kind || ""
+      kind.addEventListener("change", () => {
+        if (kind.value) rule.kind = kind.value
+        else delete rule.kind
+        card.querySelector("strong").textContent = ruleHeading(rule, index)
+        commit()
+      })
+      field(card, "Kind", kind)
       const run = document.createElement("textarea")
+      run.rows = 2
       run.value = Array.isArray(rule.run) ? rule.run.join("\n") : rule.run || ""
       run.addEventListener("change", () => {
         const lines = run.value.split("\n").map((line) => line.trim()).filter(Boolean)
         rule.run = lines.length <= 1 ? lines[0] || "" : lines
+        card.querySelector("strong").textContent = ruleHeading(rule, index)
         commit()
       })
-      card.append(run)
+      field(card, "Commands, one per line", run)
       const actions = el("div", "row-actions")
-      const remove = button("Remove")
-      remove.addEventListener("click", () => {
-        config.rules.splice(index, 1)
-        draw()
-        commit()
-      })
       const up = button("Up")
       up.addEventListener("click", () => {
         if (index === 0) return
@@ -656,13 +691,26 @@ function mountRules(body) {
         draw()
         commit()
       })
-      actions.append(up, remove)
+      const down = button("Down")
+      down.addEventListener("click", () => {
+        if (index >= config.rules.length - 1) return
+        ;[config.rules[index + 1], config.rules[index]] = [config.rules[index], config.rules[index + 1]]
+        draw()
+        commit()
+      })
+      const remove = button("Remove")
+      remove.addEventListener("click", () => {
+        config.rules.splice(index, 1)
+        draw()
+        commit()
+      })
+      actions.append(up, down, remove)
       card.append(actions)
       holder.append(card)
     })
     const add = button("Add a rule")
     add.addEventListener("click", () => {
-      config.rules.push({ "app-id": "com.example.app", run: "layout floating" })
+      config.rules.push({ _id: `r${ruleSerial++}`, run: "layout floating" })
       draw()
       commit()
     })
@@ -792,10 +840,10 @@ const SETTINGS = [
   { id: "mod-ctrl", group: "Keys", scene: "modifiers", label: "Control key", hint: "Which Control key counts as ctrl in bindings.", value: (c) => c.modifiers.ctrl, mount: (body) => mountModifier(body, "ctrl") },
   { id: "mod-cmd", group: "Keys", scene: "modifiers", label: "Command key", hint: "Which Command key counts as cmd in bindings.", value: (c) => c.modifiers.cmd, mount: (body) => mountModifier(body, "cmd") },
   { id: "mod-shift", group: "Keys", scene: "modifiers", label: "Shift key", hint: "Which Shift key counts as shift in bindings.", value: (c) => c.modifiers.shift, mount: (body) => mountModifier(body, "shift") },
-  { id: "bindings", group: "Keys", scene: "bindings", label: "Bindings", hint: "Click the desktop, then press a binding. Keys follow the modifier sides above.", value: (c) => `${Object.values(c.mode).reduce((sum, table) => sum + Object.keys(table).length, 0)} keys`, mount: mountBindings },
+  { id: "bindings", group: "Keys", scene: "bindings", label: "Bindings", hint: "Press a key under the desktop, or click the desktop and type it. Keys follow the modifier sides above.", value: (c) => `${Object.values(c.mode).reduce((sum, table) => sum + Object.keys(table).length, 0)} keys`, mount: mountBindings },
   { id: "start-at-login", group: "Automation", scene: "login", label: "Start at login", hint: "Register dinky as a login item.", value: (c) => (c["start-at-login"] ? "Yes" : "No"), mount: (body) => toggle(body, "Open dinky at login", config["start-at-login"], (on) => { config["start-at-login"] = on; commit() }, "login") },
   { id: "hooks", group: "Automation", scene: "hooks", label: "Hooks", hint: "Commands dinky runs when something happens. One command per line.", value: (c) => (Object.keys(c.hooks).length ? Object.keys(c.hooks).join(", ") : "None"), mount: mountHooks },
-  { id: "rules", group: "Automation", scene: "rules", label: "Rules", hint: "Every matching rule runs, in order. Open a sample window on the desktop to see where it lands.", value: (c) => `${c.rules.length} rules`, mount: mountRules },
+  { id: "rules", group: "Automation", scene: "rules", label: "Rules", hint: "Every matching rule runs, in order. Match on bundle id, app name, title, window id, and kind. The buttons on the desktop come from these rules.", value: (c) => `${c.rules.length} rules`, mount: mountRules },
 ]
 
 function mountModifier(body, which) {
@@ -926,8 +974,9 @@ function onAction(id) {
   else if (id === "lone-display") demo.count = demo.count === 1 ? 3 : 1
   else if (id.startsWith("sample-")) {
     demo.picked = Number(id.slice(7))
-    demo.result = previewRule(config, ruleSamples()[demo.picked])
-  } else if (id.startsWith("hook-")) fireHook(demo, id)
+    demo.result = previewRule(config, ruleSamples(config)[demo.picked])
+  } else if (id.startsWith("bind:")) pressBinding(config, demo, id.slice(5))
+  else if (id.startsWith("hook-")) fireHook(demo, id)
   ui.actionSig = ""
   renderLive()
 }
@@ -961,7 +1010,7 @@ function reshuffleSpaces() {
 
 function settleSpacesSoon() {
   clearTimeout(ui.spaceTimer)
-  ui.spaceTimer = setTimeout(settleSpaces, 700)
+  ui.spaceTimer = setTimeout(settleSpaces, 1700)
 }
 
 function settleSpaces() {
@@ -1367,12 +1416,26 @@ function applyParsed(text, message) {
   const warnings = []
   const next = normalizeConfig(parseToml(text), warnings)
   config = next
+  tagRules(config)
+  ui.originalText = text
+  ui.originalConfig = structuredClone(config)
   ui.demos = {}
   ui.snapshot = JSON.stringify(config)
   ui.actionSig = ""
   buildRail()
   renderLive()
   setStatus(warnings[0] ? `${message} ${warnings[0]}` : message, warnings.length > 0)
+}
+
+function pendingPatch() {
+  if (!ui.originalText || !ui.originalConfig) {
+    return { text: serializeConfig(config), changes: ["A new config file"] }
+  }
+  try {
+    return patchConfig(ui.originalText, ui.originalConfig, config)
+  } catch (error) {
+    return { text: ui.originalText, changes: [], error: error.message }
+  }
 }
 
 async function loadDisk() {
@@ -1388,7 +1451,12 @@ async function loadDisk() {
 }
 
 function download() {
-  const blob = new Blob([serializeConfig(config)], { type: "text/plain" })
+  const patch = pendingPatch()
+  if (patch.error) {
+    setStatus(patch.error, true)
+    return
+  }
+  const blob = new Blob([patch.text], { type: "text/plain" })
   const link = document.createElement("a")
   link.href = URL.createObjectURL(blob)
   link.download = "dinky.toml"
@@ -1397,7 +1465,12 @@ function download() {
 }
 
 async function copyConfig() {
-  const text = serializeConfig(config)
+  const patch = pendingPatch()
+  if (patch.error) {
+    setStatus(patch.error, true)
+    return
+  }
+  const text = patch.text
   try {
     await navigator.clipboard.writeText(text)
     setStatus("Copied the config.")
@@ -1407,35 +1480,77 @@ async function copyConfig() {
   }
 }
 
+function fillConfirm(patch) {
+  $("confirm-text").textContent = `This updates ${ui.path}. Comments and keys you did not change stay as they are. The current file is copied beside it first, then dinky reloads.`
+  const list = $("confirm-list")
+  list.replaceChildren()
+  const shown = patch.changes.slice(0, 12)
+  for (const change of shown) {
+    const item = document.createElement("li")
+    item.textContent = change
+    list.append(item)
+  }
+  if (patch.changes.length > shown.length) {
+    const item = document.createElement("li")
+    item.textContent = `${patch.changes.length - shown.length} more`
+    list.append(item)
+  }
+}
+
 async function writeConfig() {
   const warnings = renderWarnings()
   if (warnings.length) {
     setStatus(warnings[0], true)
     return
   }
-  $("confirm-text").textContent = `This replaces ${ui.path}. dinky reloads when the file is saved. The current file is copied beside it first.`
+  const patch = pendingPatch()
+  if (patch.error) {
+    setStatus(patch.error, true)
+    return
+  }
+  if (!patch.changes.length) {
+    setStatus("Nothing has changed.")
+    return
+  }
+  fillConfirm(patch)
   $("confirm").hidden = false
 }
 
 async function confirmWrite() {
+  const patch = pendingPatch()
+  if (patch.error) {
+    setStatus(patch.error, true)
+    return
+  }
+  if (!patch.changes.length) {
+    $("confirm").hidden = true
+    setStatus("Nothing has changed.")
+    return
+  }
   $("confirm").hidden = true
   const response = await fetch("/api/config", {
     method: "POST",
     headers: { "Content-Type": "text/plain" },
-    body: serializeConfig(config),
+    body: patch.text,
   })
   const body = await response.json().catch(() => ({}))
   if (!response.ok) {
     setStatus(body.error || "Could not write the config.", true)
     return
   }
+  ui.originalText = patch.text
+  ui.originalConfig = structuredClone(config)
   ui.snapshot = JSON.stringify(config)
   ui.path = body.path || ui.path
+  renderLive()
   setStatus(body.backup ? `Wrote ${body.path}. Backup: ${body.backup}` : `Wrote ${body.path}`)
 }
 
 function applyConfigObject(next, message) {
   config = next
+  tagRules(config)
+  ui.originalText = ""
+  ui.originalConfig = null
   ui.demos = {}
   ui.snapshot = JSON.stringify(config)
   ui.actionSig = ""
