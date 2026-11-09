@@ -1041,8 +1041,9 @@ function insertKey(items, path, valueText) {
   const item = keyItem(table, key, valueText)
   if (hasKey(items, item.path) || hasKey(items, path)) {
     const found = items.find((entry) => entry.type === "key" && (entry.path === path || entry.path === item.path))
+    const removed = keyLine(found)
     found.valueText = valueText
-    return
+    return { removed, added: keyLine(found) }
   }
   if (!table) {
     let at = 0
@@ -1051,12 +1052,13 @@ function insertKey(items, path, valueText) {
       if (items[i].type === "key") at = i + 1
     }
     items.splice(at, 0, item)
-    return
+    return { removed: "", added: keyLine(item) }
   }
   const headerAt = items.findIndex((entry) => entry.type === "header" && !entry.array && entry.path === table)
   if (headerAt === -1) {
-    items.push({ type: "raw", text: "\n" }, { type: "header", text: `[${formatHeader(table)}]\n`, path: table, array: false, headerPath: table }, item)
-    return
+    const headerText = `[${formatHeader(table)}]`
+    items.push({ type: "raw", text: "\n" }, { type: "header", text: `${headerText}\n`, path: table, array: false, headerPath: table }, item)
+    return { removed: "", added: `${headerText}\n${keyLine(item)}` }
   }
   let lastKey = headerAt
   for (let i = headerAt + 1; i < items.length; i++) {
@@ -1064,11 +1066,27 @@ function insertKey(items, path, valueText) {
     if (items[i].type === "key") lastKey = i
   }
   items.splice(lastKey + 1, 0, item)
+  return { removed: "", added: keyLine(item) }
+}
+
+function keyLine(item) {
+  return `${item.prefix}${item.valueText}${item.suffix}`.replace(/\s+$/, "")
+}
+
+function blockText(block) {
+  return renderItems(block).replace(/\s+$/, "")
+}
+
+function change(summary, removed, added) {
+  return { summary, removed: removed || "", added: added || "" }
 }
 
 function removeKey(items, path) {
   const index = items.findIndex((item) => item.type === "key" && item.path === path)
-  if (index >= 0) items.splice(index, 1)
+  if (index < 0) return ""
+  const removed = keyLine(items[index])
+  items.splice(index, 1)
+  return removed
 }
 
 function pruneHeaders(items, removed) {
@@ -1101,26 +1119,31 @@ export function patchConfig(originalText, before, after) {
     const blocks = (after?.rules || []).map((rule) => {
       const existing = byId.get(rule._id)
       if (!existing) {
-        changes.push(`Added ${ruleLabel(rule)}`)
-        return freshRuleBlock(rule)
+        const block = freshRuleBlock(rule)
+        changes.push(change(`Added ${ruleLabel(rule)}`, "", blockText(block)))
+        return block
       }
       const prior = (before?.rules || []).find((item) => item._id === rule._id)
       if (!sameLeaf(ruleBody(prior), ruleBody(rule))) {
-        changes.push(`Updated ${ruleLabel(rule)}`)
+        const removed = blockText(existing)
         edited = true
         updateRuleBlock(existing, rule)
+        changes.push(change(`Updated ${ruleLabel(rule)}`, removed, blockText(existing)))
       }
       return existing
     })
     for (const rule of before?.rules || []) {
-      if (!(after?.rules || []).some((item) => item._id === rule._id)) changes.push(`Removed ${ruleLabel(rule)}`)
+      if (!(after?.rules || []).some((item) => item._id === rule._id)) {
+        const block = byId.get(rule._id)
+        changes.push(change(`Removed ${ruleLabel(rule)}`, block ? blockText(block) : ruleLabel(rule), ""))
+      }
     }
     const beforeIds = (before?.rules || []).map((rule) => rule._id).join("\0")
     const afterIds = (after?.rules || []).map((rule) => rule._id).join("\0")
-    if (beforeIds !== afterIds && (before?.rules || []).length === (after?.rules || []).length && !edited && changes.length === 0) {
-      changes.push("Reordered rules")
-    } else if (beforeIds !== afterIds && (before?.rules || []).every((rule) => (after?.rules || []).some((item) => item._id === rule._id)) && (before?.rules || []).length === (after?.rules || []).length) {
-      changes.push("Reordered rules")
+    const sameMembers = (before?.rules || []).length === (after?.rules || []).length && (before?.rules || []).every((rule) => (after?.rules || []).some((item) => item._id === rule._id))
+    if (beforeIds !== afterIds && sameMembers) {
+      const orderOf = (rules) => rules.map((rule, index) => `${index + 1}. ${ruleLabel(rule)}`).join("\n")
+      changes.push(change("Reordered rules", orderOf(before.rules), orderOf(after.rules)))
     }
     const flat = blocks.flat()
     const marker = items.findIndex((item) => item.type === "rules-marker")
@@ -1151,13 +1174,14 @@ export function patchConfig(originalText, before, after) {
     if (planned.has(path)) continue
     if ([...planned.keys()].some((parent) => path === parent || path.startsWith(`${parent}.`))) continue
     removed.push(path)
-    removeKey(items, path)
-    changes.push(`Removed ${path}`)
+    const line = removeKey(items, path)
+    changes.push(change(`Removed ${path}`, line, ""))
   }
   for (const [path, value] of planned) {
     const previous = valueAt(before, path)
-    changes.push(previous == null ? `Added ${path} = ${showValue(value)}` : `${path}: ${showValue(previous)} → ${showValue(value)}`)
-    insertKey(items, path, emitValue(value))
+    const summary = previous == null ? `Added ${path} = ${showValue(value)}` : `${path}: ${showValue(previous)} → ${showValue(value)}`
+    const diff = insertKey(items, path, emitValue(value))
+    changes.push(change(summary, diff?.removed, diff?.added))
   }
   pruneHeaders(items, removed)
   return { text: renderItems(items), changes }

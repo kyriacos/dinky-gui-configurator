@@ -15,10 +15,15 @@ const ui = {
   originalConfig: null,
   actionSig: "",
   ruleSig: "",
+  history: [],
+  historyAt: -1,
+  historyLock: false,
+  historyAtTime: 0,
   playTimer: 0,
   spaceTimer: 0,
   heldMod: "",
   lastModel: null,
+  closedGroups: new Set(),
 }
 
 const KEY_FROM_CODE = {
@@ -67,6 +72,44 @@ function el(tag, className, text) {
 function button(label, className) {
   const node = el("button", className || "mini-btn", label)
   node.type = "button"
+  return node
+}
+
+const ICON_PATHS = {
+  undo: "M9 14 4 9l5-5 M4 9h11a5 5 0 0 1 0 10h-1",
+  redo: "M15 14l5-5-5-5 M20 9H9a5 5 0 0 0 0 10h1",
+  reload: "M20 12a8 8 0 1 1-2.3-5.7 M20 4v6h-6",
+  folder: "M4 7h5l2 2h9v9H4z",
+  copy: "M8 8h11v11H8z M5 16V5h11",
+  download: "M12 4v11 M7 11l5 5 5-5 M5 20h14",
+  write: "M5 4h11l3 3v13H5z M8 4v5h6 M8 20v-6h8v6",
+  panel: "M4 5h16v14H4z M9 5v14",
+  plus: "M12 5v14 M5 12h14",
+  up: "M6 14l6-6 6 6",
+  down: "M6 10l6 6 6-6",
+  trash: "M5 7h14 M9 7V5h6v2 M8 7l1 12h6l1-12",
+  code: "M8 7 4 12l4 5 M16 7l4 5-4 5",
+}
+
+function icon(name) {
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg")
+  svg.setAttribute("viewBox", "0 0 24 24")
+  svg.setAttribute("aria-hidden", "true")
+  const path = document.createElementNS("http://www.w3.org/2000/svg", "path")
+  path.setAttribute("d", ICON_PATHS[name] || "")
+  path.setAttribute("fill", "none")
+  path.setAttribute("stroke", "currentColor")
+  path.setAttribute("stroke-width", "1.8")
+  path.setAttribute("stroke-linecap", "round")
+  path.setAttribute("stroke-linejoin", "round")
+  svg.append(path)
+  return svg
+}
+
+function dress(node, name) {
+  const label = node.textContent.trim()
+  node.replaceChildren(icon(name), el("span", "", label))
+  node.setAttribute("aria-label", label)
   return node
 }
 
@@ -140,11 +183,15 @@ function renderLive() {
   ui.lastModel = model
   $("write").disabled = renderWarnings().length > 0
   paintRuleBoard()
+  syncHistoryButtons()
 }
 
 function select(id) {
   if (!SETTINGS.some((item) => item.id === id)) id = "default-layout"
   ui.selected = id
+  const setting = SETTINGS.find((item) => item.id === id)
+  if (setting) ui.closedGroups.delete(setting.group)
+  saveGroups()
   history.replaceState(null, "", `#${id}`)
   clearInterval(ui.playTimer)
   ui.actionSig = ""
@@ -155,7 +202,61 @@ function select(id) {
 }
 
 function commit() {
+  remember()
   renderLive()
+}
+
+function remember() {
+  if (ui.historyLock) return
+  const snap = JSON.stringify(config)
+  if (ui.history[ui.historyAt] === snap) return
+  const now = Date.now()
+  if (ui.history.length && now - ui.historyAtTime < 450 && ui.historyAt === ui.history.length - 1) {
+    ui.history[ui.historyAt] = snap
+    ui.historyAtTime = now
+    return
+  }
+  ui.history.splice(ui.historyAt + 1)
+  ui.history.push(snap)
+  if (ui.history.length > 80) ui.history.shift()
+  ui.historyAt = ui.history.length - 1
+  ui.historyAtTime = now
+}
+
+function resetHistory() {
+  ui.history = [JSON.stringify(config)]
+  ui.historyAt = 0
+  ui.historyAtTime = 0
+  syncHistoryButtons()
+}
+
+function restoreHistory(index) {
+  if (index < 0 || index >= ui.history.length) return
+  ui.historyLock = true
+  config = JSON.parse(ui.history[index])
+  ui.historyAt = index
+  ui.ruleSig = ""
+  ui.actionSig = ""
+  ui.historyLock = false
+  buildRail()
+  renderLive()
+}
+
+function undo() {
+  restoreHistory(ui.historyAt - 1)
+}
+
+function redo() {
+  restoreHistory(ui.historyAt + 1)
+}
+
+function syncHistoryButtons() {
+  const undoButton = $("undo")
+  const redoButton = $("redo")
+  if (!undoButton || !redoButton) return
+  undoButton.disabled = ui.historyAt <= 0
+  redoButton.disabled = ui.historyAt < 0 || ui.historyAt >= ui.history.length - 1
+  $("write").classList.toggle("dirty", dirty())
 }
 
 function slider(parent, { min, max, step, value, format, onInput }) {
@@ -747,7 +848,10 @@ function paintRuleBoard() {
     demo.ruleId = null
   }
   const sig = ruleBoardSig(demo)
-  if (sig === ui.ruleSig) return
+  if (sig === ui.ruleSig) {
+    syncRuleCrumb(demo)
+    return
+  }
   ui.ruleSig = sig
   board.replaceChildren()
   if (demo.view === "one") drawOneRule(board, config.rules.findIndex((rule) => rule._id === demo.ruleId))
@@ -756,8 +860,8 @@ function paintRuleBoard() {
 
 function drawAllRules(board) {
   const head = el("div", "rule-head")
-  head.append(el("h2", "", "All rules"))
-  const add = button("Add a rule", "btn")
+  head.append(ruleCrumbs())
+  const add = dress(button("Add a rule", "btn"), "plus")
   add.addEventListener("click", addRule)
   head.append(add)
   board.append(head, el("p", "rule-note", "Click a rule to edit it. Earlier rules run first."))
@@ -772,11 +876,11 @@ function drawAllRules(board) {
     open.append(el("span", "rule-index", String(index + 1)), copy)
     open.addEventListener("click", () => showRule(rule._id))
     const actions = el("div", "rule-moves")
-    const up = textButton("Up")
+    const up = textButton("Up", "up")
     up.addEventListener("click", () => moveRule(index, -1))
-    const down = textButton("Down")
+    const down = textButton("Down", "down")
     down.addEventListener("click", () => moveRule(index, 1))
-    const remove = textButton("Remove", "danger")
+    const remove = textButton("Remove", "trash", "danger")
     remove.addEventListener("click", () => removeRule(index))
     actions.append(up, down, remove)
     row.append(open, actions)
@@ -785,16 +889,29 @@ function drawAllRules(board) {
   board.append(list)
 }
 
-function textButton(label, className = "") {
-  const node = el("button", className ? `text-btn ${className}` : "text-btn", label)
+function textButton(label, iconName, className = "") {
+  const node = el("button", className ? `text-btn ${className}` : "text-btn")
   node.type = "button"
+  node.append(icon(iconName), document.createTextNode(label))
   return node
 }
 
-function drawOneRule(board, index) {
-  const rule = config.rules[index]
-  const head = el("div", "rule-head")
-  const back = button("All rules", "btn")
+function syncRuleCrumb(demo) {
+  const here = document.querySelector("#rule-board .crumb-here")
+  if (!here || demo.view !== "one") return
+  const rule = config.rules.find((item) => item._id === demo.ruleId)
+  if (rule) here.textContent = ruleTitle(rule)
+}
+
+function ruleCrumbs(current) {
+  const nav = el("nav", "crumbs")
+  nav.setAttribute("aria-label", "Rules")
+  if (!current) {
+    nav.append(el("span", "crumb-here", "Rules"))
+    return nav
+  }
+  const back = el("button", "crumb", "Rules")
+  back.type = "button"
   back.addEventListener("click", () => {
     const demo = demoFor("rules")
     demo.view = "all"
@@ -802,7 +919,14 @@ function drawOneRule(board, index) {
     ui.ruleSig = ""
     commit()
   })
-  head.append(el("h2", "", `Rule ${index + 1}`), back)
+  nav.append(back, el("span", "crumb-sep", "/"), el("span", "crumb-here", current))
+  return nav
+}
+
+function drawOneRule(board, index) {
+  const rule = config.rules[index]
+  const head = el("div", "rule-head")
+  head.append(ruleCrumbs(ruleTitle(rule)))
   board.append(head, el("p", "rule-note", "A blank matcher is ignored. Layout floating and layout tiling are decided before the window is placed."))
   const grid = el("div", "rule-grid")
   for (const [key, label] of RULE_FIELDS) {
@@ -832,7 +956,7 @@ function drawOneRule(board, index) {
   commandList(rule.run).forEach((command, commandIndex) => mountCommandRow(commands, rule, commandIndex, command))
   sheet.append(commands)
   const bar = el("div", "row-actions")
-  const add = button("Add a command", "btn")
+  const add = dress(button("Add a command", "btn"), "plus")
   add.addEventListener("click", () => {
     const next = commandList(rule.run)
     next.push("layout floating")
@@ -840,11 +964,11 @@ function drawOneRule(board, index) {
     ui.ruleSig = ""
     commit()
   })
-  const up = button("Move rule up")
+  const up = textButton("Move up", "up")
   up.addEventListener("click", () => moveRule(index, -1))
-  const down = button("Move rule down")
+  const down = textButton("Move down", "down")
   down.addEventListener("click", () => moveRule(index, 1))
-  const remove = button("Remove rule")
+  const remove = textButton("Remove rule", "trash", "danger")
   remove.addEventListener("click", () => removeRule(index))
   bar.append(add, up, down, remove)
   sheet.append(bar)
@@ -887,7 +1011,7 @@ function mountCommandRow(parent, rule, index, command) {
     write(current)
   })
   fill(parsed)
-  const remove = textButton("Remove", "danger")
+  const remove = textButton("Remove", "trash", "danger")
   remove.addEventListener("click", () => {
     const commands = commandList(rule.run)
     commands.splice(index, 1)
@@ -1150,14 +1274,49 @@ function mountFollow(body) {
   }, "com.apple.mail")
 }
 
+function saveGroups() {
+  try { sessionStorage.setItem("dinky-groups", JSON.stringify([...ui.closedGroups])) } catch { /* storage may be blocked */ }
+}
+
+function groupSlug(name) {
+  return `group-${name.toLowerCase().replace(/\s+/g, "-")}`
+}
+
 function buildRail() {
   const rail = $("rail")
+  const scroll = rail.scrollTop
   rail.replaceChildren()
+  const groups = [...new Set(SETTINGS.map((setting) => setting.group))]
+  const allClosed = groups.every((name) => ui.closedGroups.has(name))
+  const allBtn = button(allClosed ? "Expand all" : "Collapse all", "group-all")
+  allBtn.addEventListener("click", () => {
+    ui.closedGroups = allClosed ? new Set() : new Set(groups)
+    saveGroups()
+    buildRail()
+  })
+  rail.append(allBtn)
   let group = ""
+  let section = null
   for (const setting of SETTINGS) {
     if (setting.group !== group) {
-      group = setting.group
-      rail.append(el("h2", "group-title", group))
+      const name = setting.group
+      group = name
+      const closed = ui.closedGroups.has(name)
+      section = el("section", closed ? "group closed" : "group")
+      const body = el("div", "group-body")
+      body.id = groupSlug(name)
+      const head = button("", "group-title")
+      head.setAttribute("aria-expanded", String(!closed))
+      head.setAttribute("aria-controls", body.id)
+      head.append(el("span", "", name), icon("down"))
+      head.addEventListener("click", () => {
+        if (ui.closedGroups.has(name)) ui.closedGroups.delete(name)
+        else ui.closedGroups.add(name)
+        saveGroups()
+        buildRail()
+      })
+      section.append(head, body)
+      rail.append(section)
     }
     const open = setting.id === ui.selected
     const row = el("div", open ? "set open" : "set")
@@ -1173,8 +1332,15 @@ function buildRail() {
       setting.mount(body)
       row.append(body)
     }
-    rail.append(row)
+    section.querySelector(".group-body").append(row)
   }
+  rail.scrollTop = scroll
+  const openRow = rail.querySelector(".set.open")
+  if (!openRow) return
+  const top = openRow.offsetTop
+  const bottom = top + openRow.offsetHeight
+  if (bottom > rail.scrollTop + rail.clientHeight) rail.scrollTop = bottom - rail.clientHeight + 8
+  else if (top < rail.scrollTop) rail.scrollTop = Math.max(0, top - 8)
 }
 
 function onAction(id) {
@@ -1555,6 +1721,13 @@ function hoverFocus(event) {
 }
 
 function onKeyDown(event) {
+  const meta = event.metaKey || event.ctrlKey
+  if (meta && event.key.toLowerCase() === "z" && !event.target.closest("input, textarea, select")) {
+    event.preventDefault()
+    if (event.shiftKey) redo()
+    else undo()
+    return
+  }
   const mod = { Alt: "alt", Control: "ctrl", Meta: "cmd", Shift: "shift" }[event.key]
   if (mod) ui.heldMod = mod
   if (event.target.closest("input, textarea, select")) return
@@ -1655,6 +1828,7 @@ function applyParsed(text, message) {
   ui.snapshot = JSON.stringify(config)
   ui.actionSig = ""
   ui.ruleSig = ""
+  resetHistory()
   buildRail()
   renderLive()
   setStatus(warnings[0] ? `${message} ${warnings[0]}` : message, warnings.length > 0)
@@ -1708,25 +1882,32 @@ async function copyConfig() {
     await navigator.clipboard.writeText(text)
     setStatus("Copied the config.")
   } catch {
-    $("toml-drawer")?.setAttribute("open", "")
-    setStatus("Clipboard blocked. The config is in the file panel.", true)
+    $("config-modal").showModal()
+    setStatus("Clipboard blocked. The config is open instead.", true)
   }
 }
 
 function fillConfirm(patch) {
-  $("confirm-text").textContent = `This updates ${ui.path}. Comments and keys you did not change stay as they are. The current file is copied beside it first, then dinky reloads.`
+  $("confirm-text").textContent = `Review what will be written to ${ui.path}. Comments and keys you did not change stay as they are. The current file is copied beside it first, then dinky reloads.`
   const list = $("confirm-list")
   list.replaceChildren()
-  const shown = patch.changes.slice(0, 12)
-  for (const change of shown) {
-    const item = document.createElement("li")
-    item.textContent = change
-    list.append(item)
-  }
-  if (patch.changes.length > shown.length) {
-    const item = document.createElement("li")
-    item.textContent = `${patch.changes.length - shown.length} more`
-    list.append(item)
+  for (const item of patch.changes) {
+    const summary = typeof item === "string" ? item : item.summary
+    const removed = typeof item === "string" ? "" : item.removed
+    const added = typeof item === "string" ? "" : item.added
+    const details = el("details", "change")
+    const sum = document.createElement("summary")
+    sum.textContent = summary
+    const pre = el("pre", "diff")
+    for (const line of String(removed || "").split("\n")) {
+      if (line) pre.append(el("div", "del", `- ${line}`))
+    }
+    for (const line of String(added || "").split("\n")) {
+      if (line) pre.append(el("div", "add", `+ ${line}`))
+    }
+    if (!pre.childElementCount) pre.append(el("div", "", summary))
+    details.append(sum, pre)
+    list.append(details)
   }
 }
 
@@ -1788,6 +1969,7 @@ function applyConfigObject(next, message) {
   ui.snapshot = JSON.stringify(config)
   ui.actionSig = ""
   ui.ruleSig = ""
+  resetHistory()
   buildRail()
   renderLive()
   setStatus(message)
@@ -1799,20 +1981,89 @@ window.__dinky = {
   model: () => ui.lastModel,
 }
 
+let pendingLeave = null
+
+function askLeave(action) {
+  if (!dirty()) {
+    action()
+    return
+  }
+  pendingLeave = action
+  $("leave").hidden = false
+}
+
 $("reload").addEventListener("click", () => {
-  loadDisk().catch(() => setStatus("Couldn't read the config. Is the preview server running?", true))
+  askLeave(() => loadDisk().catch(() => setStatus("Couldn't read the config. Is the preview server running?", true)))
 })
-$("open-file").addEventListener("click", () => $("file").click())
+$("open-file").addEventListener("click", () => askLeave(() => $("file").click()))
 $("file").addEventListener("change", () => {
   const file = $("file").files?.[0]
   if (!file) return
   file.text().then((text) => applyParsed(text, `Opened ${file.name}. Write config saves it into dinky's folder.`)).catch((error) => setStatus(error.message, true))
+})
+$("show-config").addEventListener("click", () => $("config-modal").showModal())
+$("config-close").addEventListener("click", () => $("config-modal").close())
+$("config-modal").addEventListener("click", (event) => {
+  if (event.target === $("config-modal")) $("config-modal").close()
 })
 $("copy").addEventListener("click", () => copyConfig())
 $("download").addEventListener("click", download)
 $("write").addEventListener("click", () => writeConfig())
 $("confirm-no").addEventListener("click", () => { $("confirm").hidden = true })
 $("confirm-yes").addEventListener("click", () => confirmWrite())
+$("undo").addEventListener("click", undo)
+$("redo").addEventListener("click", redo)
+$("leave-no").addEventListener("click", () => {
+  pendingLeave = null
+  $("leave").hidden = true
+})
+$("leave-yes").addEventListener("click", () => {
+  const action = pendingLeave
+  pendingLeave = null
+  $("leave").hidden = true
+  action?.()
+})
+function applyTheme(theme) {
+  document.documentElement.dataset.theme = theme
+  $("theme-ink").classList.toggle("on", theme === "ink")
+  $("theme-paper").classList.toggle("on", theme === "paper")
+  $("theme-ink").setAttribute("aria-pressed", String(theme === "ink"))
+  $("theme-paper").setAttribute("aria-pressed", String(theme === "paper"))
+  try { localStorage.setItem("dinky-theme", theme) } catch { /* storage may be blocked */ }
+}
+
+$("theme-ink").addEventListener("click", () => applyTheme("ink"))
+$("theme-paper").addEventListener("click", () => applyTheme("paper"))
+applyTheme(document.documentElement.dataset.theme === "paper" ? "paper" : "ink")
+
+$("rail-toggle").addEventListener("click", () => {
+  const closed = !$("layout").classList.contains("rail-closed")
+  $("layout").classList.toggle("rail-closed", closed)
+  $("rail-toggle").setAttribute("aria-expanded", String(!closed))
+  $("rail-toggle").setAttribute("aria-label", closed ? "Show settings" : "Hide settings")
+  try { sessionStorage.setItem("dinky-rail", closed ? "closed" : "open") } catch { /* storage may be blocked */ }
+})
+
+for (const [id, name] of [
+  ["undo", "undo"],
+  ["redo", "redo"],
+  ["reload", "reload"],
+  ["open-file", "folder"],
+  ["show-config", "code"],
+  ["copy", "copy"],
+  ["download", "download"],
+  ["write", "write"],
+  ["confirm-yes", "write"],
+  ["rail-toggle", "panel"],
+]) dress($(id), name)
+
+try {
+  if (sessionStorage.getItem("dinky-rail") === "closed") {
+    $("layout").classList.add("rail-closed")
+    $("rail-toggle").setAttribute("aria-expanded", "false")
+    $("rail-toggle").setAttribute("aria-label", "Show settings")
+  }
+} catch { /* storage may be blocked */ }
 $("desk").addEventListener("pointerdown", onPointerDown)
 $("desk").addEventListener("click", onDeskClick)
 document.addEventListener("pointermove", onPointerMove)
@@ -1825,8 +2076,14 @@ window.addEventListener("beforeunload", (event) => {
   event.returnValue = ""
 })
 
+try {
+  const savedGroups = JSON.parse(sessionStorage.getItem("dinky-groups") || "[]")
+  if (Array.isArray(savedGroups)) ui.closedGroups = new Set(savedGroups.filter((name) => typeof name === "string"))
+} catch { /* storage may be blocked */ }
+
 const hash = location.hash.replace("#", "")
 if (SETTINGS.some((item) => item.id === hash)) ui.selected = hash
+ui.closedGroups.delete(SETTINGS.find((item) => item.id === ui.selected)?.group)
 applyConfigObject(normalizeConfig({}), "Loading your config…")
 loadDisk().catch((error) => {
   const offline = /fetch|network/i.test(error.message || "")

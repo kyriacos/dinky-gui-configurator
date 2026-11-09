@@ -1,43 +1,66 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="ink">
 <head>
+  <script>
+    try {
+      const theme = localStorage.getItem("dinky-theme")
+      if (theme === "paper" || theme === "ink") document.documentElement.dataset.theme = theme
+    } catch { /* storage may be blocked */ }
+  </script>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Dinky configuration</title>
   <link rel="icon" href="data:,">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Schibsted+Grotesk:wght@400;500;600&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:ital,wght@0,400;0,500;0,600;1,400&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="css/app.css">
 </head>
 <body>
   <header>
     <div>
-      <h1>Dinky</h1>
+      <h1><span class="prompt">❯</span> dinky</h1>
       <p class="lede">Adjust a setting and watch the windows move.</p>
       <p id="status" class="status" role="status"></p>
     </div>
     <div class="top-actions">
-      <button class="btn" id="reload" type="button">Reload from disk</button>
-      <button class="btn" id="open-file" type="button">Open file</button>
+      <div class="theme-switch" role="group" aria-label="Theme">
+        <button class="btn on" id="theme-ink" type="button" aria-pressed="true">Ink</button>
+        <button class="btn" id="theme-paper" type="button" aria-pressed="false">Paper</button>
+      </div>
+      <button class="btn" id="undo" type="button" title="Undo">Undo</button>
+      <button class="btn" id="redo" type="button" title="Redo">Redo</button>
+      <button class="btn" id="reload" type="button">Reload</button>
+      <button class="btn" id="open-file" type="button">Open</button>
       <input id="file" type="file" accept=".toml,text/plain" hidden>
-      <button class="btn" id="copy" type="button">Copy config</button>
+      <button class="btn" id="show-config" type="button">Config</button>
+      <button class="btn" id="copy" type="button">Copy</button>
       <button class="btn" id="download" type="button">Download</button>
-      <button class="btn primary" id="write" type="button">Write config</button>
+      <button class="btn primary" id="write" type="button">Write</button>
     </div>
   </header>
   <div id="confirm" class="confirm" hidden>
     <div class="confirm-copy">
       <p id="confirm-text"></p>
-      <ul id="confirm-list"></ul>
+      <div id="confirm-list"></div>
     </div>
     <div class="confirm-actions">
       <button class="btn primary" id="confirm-yes" type="button">Write it</button>
       <button class="btn" id="confirm-no" type="button">Cancel</button>
     </div>
   </div>
-  <div class="layout">
-    <aside id="rail" aria-label="Settings"></aside>
+  <div id="leave" class="confirm" hidden>
+    <p id="leave-text">There are unsaved changes. Leave without writing them?</p>
+    <div class="confirm-actions">
+      <button class="btn" id="leave-yes" type="button">Leave</button>
+      <button class="btn primary" id="leave-no" type="button">Stay</button>
+    </div>
+  </div>
+  <div class="layout" id="layout">
+    <div class="rail-col">
+      <button class="rail-toggle" id="rail-toggle" type="button" aria-expanded="true" aria-controls="rail">Settings</button>
+      <aside id="rail" aria-label="Settings"></aside>
+    </div>
     <section class="stage">
       <div id="rule-board" hidden></div>
       <div class="preview-col">
@@ -47,11 +70,14 @@
       </div>
     </section>
   </div>
-  <details class="toml-drawer">
-    <summary>Config file</summary>
+  <dialog id="config-modal" class="config-modal" aria-labelledby="config-title">
+    <div class="config-bar">
+      <h2 id="config-title">Config</h2>
+      <button class="btn" id="config-close" type="button">Close</button>
+    </div>
     <div id="warnings" class="warnings"></div>
     <pre id="toml"></pre>
-  </details>
+  </dialog>
   <script type="module" src="js/main.js"></script>
 </body>
 </html>
